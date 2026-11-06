@@ -3,11 +3,13 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <ESP32Servo.h>
 
 // OLED settings
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 #define OLED_RESET -1
+
 
 Adafruit_SSD1306 display(
 SCREEN_WIDTH,
@@ -20,10 +22,15 @@ OLED_RESET
 #define ENCODER_A 18
 #define ENCODER_B 19
 #define ENCODER_SW 23
+#define MOTOR_SIGNAL_PIN 5
 
 // Spin coater settings
 int rpm = 3000;
 int spinTime = 30;
+int rpmLow = 500; 
+int rpmHigh = 6000; 
+int escMinPulseWidth = 1100;  // pulse (us) at rpmLow - calibrate
+int escMaxPulseWidth = 1800;  // pulse (us) at rpmHigh - calibrate
 
 // 0 = RPM, 1 = TIME
 int selectedSetting = 0;
@@ -46,45 +53,52 @@ bool longPressHandled = false;
 void readEncoder();
 void readButton();
 void updateScreen();
+void updateMotor(); 
+
+Servo esc; 
 
 void setup() {
 
-Serial.begin(115200);
+  Serial.begin(115200);
 
-// Encoder setup
-pinMode(ENCODER_A, INPUT_PULLUP);
-pinMode(ENCODER_B, INPUT_PULLUP);
-pinMode(ENCODER_SW, INPUT_PULLUP);
+  // Encoder setup
+  pinMode(ENCODER_A, INPUT_PULLUP);
+  pinMode(ENCODER_B, INPUT_PULLUP);
+  pinMode(ENCODER_SW, INPUT_PULLUP);
 
-lastA = digitalRead(ENCODER_A);
+  lastA = digitalRead(ENCODER_A);
 
-// OLED setup
-Wire.begin(21, 22);
+  // OLED setup
+  Wire.begin(21, 22);
 
-if (!display.begin(
-SSD1306_SWITCHCAPVCC, 0x3C)) {
+  if (!display.begin(
+  SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("OLED not found");
+    while (true) {
+      delay(100);
+    }
+  }
 
-  Serial.println("OLED not found");
+  // Motor setup + ESC arming (hold minimum throttle)
+  esc.setPeriodHertz(50);
+  esc.attach(MOTOR_SIGNAL_PIN, 1000, 2000);
+  esc.writeMicroseconds(1000);
+  delay(3000);
 
-while (true) {
-  delay(100);
-}
-}
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
 
+  display.setTextSize(1);
+  display.setCursor(15, 20);
+  display.println("SPIN COATER");
 
-display.clearDisplay();
-display.setTextColor(SSD1306_WHITE);
+  display.setCursor(25, 35);
+  display.println("STARTING...");
 
-display.setTextSize(1);
-display.setCursor(15, 20);
-display.println("SPIN COATER");
+  display.display();
 
-display.setCursor(25, 35);
-display.println("STARTING...");
+  delay(1500);
 
-display.display();
-
-delay(1500);
 }
 
 void loop() {
@@ -92,91 +106,101 @@ void loop() {
   readEncoder();
   readButton();
   updateScreen();
+  updateMotor(); 
 
 }
 
 // READ ROTARY ENCODER
 void readEncoder() {
 
-int currentA = digitalRead(ENCODER_A);
+  int currentA = digitalRead(ENCODER_A);
 
-if (currentA != lastA &&
-currentA == LOW &&
-millis() - lastEncoderTime > 3) {
+  if (currentA != lastA &&
+  currentA == LOW &&
+  millis() - lastEncoderTime > 3) {
 
-lastEncoderTime = millis();
+  lastEncoderTime = millis();
 
-if (!running) {
+  if (!running) {
 
-int direction;
+  int direction;
 
-if (digitalRead(ENCODER_B) == HIGH) {
-direction = 1;
-} else {
-direction = -1;
-}
+    if (digitalRead(ENCODER_B) == HIGH) {
+    direction = 1;
+    } else {
+    direction = -1;
+    }
 
-if (selectedSetting == 0) {
+    if (selectedSetting == 0) {
 
-rpm += direction * 100;
-rpm = constrain(rpm, 500, 6000);
+      rpm += direction * 100;
+      rpm = constrain(rpm, rpmLow, rpmHigh);
 
-} else {
+    } else {
 
-spinTime += direction * 5;
-spinTime = constrain(spinTime, 5, 180);
+      spinTime += direction * 5;
+      spinTime = constrain(spinTime, 5, 180);
 
-}
+    }
 
-}
+  }
 }
 
 lastA = currentA;
 }
 
+//read the motor 
+//https://www.instructables.com/Control-Brushless-Motor-Using-Arduino/
+void updateMotor() {
+  if (running) {
+    int us = map(rpm, rpmLow, rpmHigh, escMinPulseWidth, escMaxPulseWidth); 
+    esc.writeMicroseconds(us); 
+  }
+  else {
+    esc.writeMicroseconds(1000); 
+  }
+}
+
 // READ BUTTON
 void readButton() {
 
-bool buttonState = digitalRead(ENCODER_SW);
+  bool buttonState = digitalRead(ENCODER_SW);
 
-if (buttonState == LOW &&
-lastButtonState == HIGH) {
+  if (buttonState == LOW &&
+  lastButtonState == HIGH) {
 
-buttonPressedTime = millis();
-longPressHandled = false;
+  buttonPressedTime = millis();
+  longPressHandled = false;
 
-}
-
-// Long press
-if (buttonState == LOW &&
-!longPressHandled &&
-millis() - buttonPressedTime >= 900) {
-
-longPressHandled = true;
-
-running = !running;
-
-if (running) {
-startTime = millis();
-}
-
-}
-
-// Short press
-if (buttonState == HIGH &&
-lastButtonState == LOW) {
-
-unsigned long pressDuration =
-millis() - buttonPressedTime;
-
-if (pressDuration > 30 &&
-pressDuration < 900 &&
-!running) {
-
-    selectedSetting = 1 - selectedSetting;
-
-    }
   }
+
+  // Long press
+  if (buttonState == LOW &&
+  !longPressHandled &&
+  millis() - buttonPressedTime >= 900) {
+
+    longPressHandled = true;
+
+    running = !running;
+
+    if (running) {
+    startTime = millis();
+    }
+
+  }
+  // Short press
+  if (buttonState == HIGH &&
+  lastButtonState == LOW) {
+
+  unsigned long pressDuration =
+  millis() - buttonPressedTime;
+
+  if (pressDuration > 30 &&
+  pressDuration < 900 &&
+  !running) {
+      selectedSetting = 1 - selectedSetting;
+      }
+    }
 
   lastButtonState = buttonState;
 }
